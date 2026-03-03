@@ -1,0 +1,19 @@
+# Data files (WRDS licensed data should not be shared)
+*.csv
+*.xlsx
+*.xls
+*.rds
+
+# R session files
+.Rhistory
+.RData
+.Rproj.user/
+
+# Mac system files
+.DS_Store
+
+# Output
+*.txt
+*.png
+*.pdf
+
