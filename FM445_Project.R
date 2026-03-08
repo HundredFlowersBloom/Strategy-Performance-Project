@@ -308,37 +308,38 @@ qual_port = vw_return(crsp_merged, "gp_q") %>%
 # 9. FAMA-FRENCH FACTORS FOR RHS OF REGRESSIONS
 # =============================================================================
 
-# Download FF5 factors for use as controls (not as dependent variables)
-# These are your benchmark models for computing alphas
-ff5 = dbGetQuery(wrds, "
-  SELECT date, mktrf, smb, hml, rmw, cma, rf
-  FROM ff.fivefactors_monthly
-  WHERE date BETWEEN '1990-01-01' AND '2022-12-31'
-")
+temp = tempfile()
+download.file("https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_CSV.zip",
+              temp)
+ff5 = read.csv(unz(temp, "F-F_Research_Data_5_Factors_2x3.csv"),
+               skip = 3, header = TRUE) %>%
+  rename(Date = 1) %>%
+  mutate(Date = as.numeric(as.character(Date))) %>%
+  filter(!is.na(Date), Date >= 199001, Date <= 202212) %>%
+  mutate(Date = ymd(paste0(Date, "01"))) %>%
+  mutate(across(-Date, ~ as.numeric(as.character(.)))) %>%
+  rename(date = Date, mktrf = Mkt.RF, smb = SMB, hml = HML,
+         rmw = RMW, cma = CMA, rf = RF) %>%
+  mutate(across(c(mktrf, smb, hml, rmw, cma, rf), ~ . / 100)) #Divide by 100 to get percentages in decimals
+unlink(temp)
 
 ff5 = ff5 %>%
-  mutate(date = ymd(date)) %>%
-  # FF factors from WRDS are in decimal; convert to match CRSP returns
-  mutate(across(c(mktrf, smb, hml, rmw, cma, rf), ~ . ))
-
-# Check units: if CRSP ret is in decimals (0.05 = 5%), FF should match
-# If FF is in percentages (5.0 = 5%), divide by 100
-cat("\nFF5 mean mktrf:", mean(ff5$mktrf, na.rm = TRUE), "\n")
-cat("CRSP mean ret:",   mean(crsp$ret, na.rm = TRUE), "\n")
-# Both should be similar magnitude — if not, rescale one
+  mutate(date = ceiling_date(date, "month") - days(1)) #Make dates align better
 
 # =============================================================================
 # 10. MASTER DATASET
 # =============================================================================
 
 master = val_port %>%
-  select(date, HML) %>%
-  left_join(mom_port %>% select(date, UMD), by = "date") %>%
-  left_join(qual_port %>% select(date, QMJ), by = "date") %>%
-  left_join(ff5, by = "date") %>%
+  mutate(ym = floor_date(date, "month")) %>%
+  select(date, ym, HML) %>%
+  left_join(mom_port %>% mutate(ym = floor_date(date, "month")) %>% select(ym, UMD), by = "ym") %>%
+  left_join(qual_port %>% mutate(ym = floor_date(date, "month")) %>% select(ym, QMJ), by = "ym") %>%
+  left_join(ff5 %>% mutate(ym = floor_date(date, "month")) %>% select(-date), by = "ym") %>%
+  select(-ym) %>%
   filter(date >= ymd("1990-01-01"), date <= ymd("2022-12-31"))
 
-# Convert your portfolio returns to excess returns (subtract RF)
+# Convert portfolio returns to excess returns (subtract RF)
 master = master %>%
   mutate(
     HML_ex = HML - rf,
