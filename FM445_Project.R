@@ -4,17 +4,17 @@
 
 library(tidyverse)
 library(lubridate)
-library(RPostgres)    # install.packages("RPostgres")
-
+library(RPostgres)    
 # 1. CONNECT TO WRDS
 
-# You'll be prompted for your WRDS username and password
+# prompt for your WRDS username and password
 wrds = dbConnect(Postgres(),
-                 host   = "wrds-pgdata.wharton.upenn.edu",
-                 port   = 9737,
-                 dbname = "wrds",
-                 sslmode = "require",
-                 user    = rstudioapi::askForPassword("WRDS username"),
+                 host     = "wrds-pgdata.wharton.upenn.edu",
+                 port     = 9737,
+                 dbname   = "wrds",
+                 sslmode  = "require",
+                 gssencmode = "disable", #Wasn't working without this. Bypassing an encryption negotiation.
+                 user     = rstudioapi::askForPassword("WRDS username"),
                  password = rstudioapi::askForPassword("WRDS password"))
 
 # =============================================================================
@@ -39,9 +39,18 @@ crsp = dbGetQuery(wrds, "
 crsp = crsp %>%
   mutate(date = ymd(date),
          ret  = as.numeric(ret),
-         prc  = abs(as.numeric(prc)),       # prc is negative when bid-ask avg
-         me   = (prc * shrout) / 1000) %>%  # market equity in $millions
-  filter(!is.na(ret), !is.na(me), me > 0)
+         prc  = abs(as.numeric(prc)),
+         me   = (prc * shrout) / 1000) %>%
+  filter(!is.na(ret), !is.na(me), me > 0,
+         prc >= 5)    # drop penny stocks/illegitimate stocks below $5
+
+winsorize = function(x, probs = c(0.01, 0.99)) {
+  bounds = quantile(x, probs, na.rm = TRUE)
+  pmax(pmin(x, bounds[2]), bounds[1])
+}
+
+crsp = crsp %>% mutate(ret = winsorize(ret))
+summary(crsp$ret)
 
 cat("CRSP rows:", nrow(crsp), "\n")
 cat("Unique stocks:", n_distinct(crsp$permno), "\n")
@@ -102,7 +111,15 @@ comp = comp %>%
                      NA)
   )
 
+#Winsorization
+comp = comp %>%
+  mutate(gp_at = ifelse(!is.na(gp_at), winsorize(gp_at), NA)) 
+
+#Sanity checks
 cat("Compustat rows:", nrow(comp), "\n")
+summary(comp$be)
+summary(comp$gp_at)
+cat("Non-NA gp_at:", sum(!is.na(comp$gp_at)), "\n")
 
 # =============================================================================
 # 4. CRSP-COMPUSTAT LINK
@@ -146,7 +163,7 @@ dec_me = crsp %>%
 jun_me = crsp %>%
   filter(month(date) == 6) %>%
   mutate(year = year(date)) %>%
-  select(permno, year, me_jun = me)
+  select(permno, year, me_jun = me, exchcd)
 
 # Match: fiscal year t-1 accounting data -> portfolios formed June year t
 # We use the most recent fiscal year ending in calendar year t-1
@@ -185,10 +202,10 @@ portfolios = annual_chars %>%
     nyse = (exchcd == 1),
     # Value sort: B/M quintiles using NYSE breakpoints
     bm_breaks = list(quantile(bm[nyse], probs = c(0.2, 0.4, 0.6, 0.8), na.rm = TRUE)),
-    bm_q      = assign_quintiles(bm, unlist(bm_breaks)),
+    bm_q      = assign_quintiles(bm, bm_breaks[[1]]),
     # Quality sort: GP/AT quintiles using NYSE breakpoints
     gp_breaks = list(quantile(gp_at[nyse], probs = c(0.2, 0.4, 0.6, 0.8), na.rm = TRUE)),
-    gp_q      = assign_quintiles(gp_at, unlist(gp_breaks))
+    gp_q      = assign_quintiles(gp_at, gp_breaks[[1]])
   ) %>%
   ungroup() %>%
   select(permno, sort_year, bm_q, gp_q, me_jun)
@@ -233,11 +250,12 @@ crsp_mom = crsp %>%
 
 # Monthly momentum quintile assignment (NYSE breakpoints)
 crsp_mom = crsp_mom %>%
+  filter(!is.na(ret_12_2)) %>%
   group_by(date) %>%
   mutate(
     nyse = (exchcd == 1),
     mom_breaks = list(quantile(ret_12_2[nyse], probs = c(0.2, 0.4, 0.6, 0.8), na.rm = TRUE)),
-    mom_q      = assign_quintiles(ret_12_2, unlist(mom_breaks))
+    mom_q      = assign_quintiles(ret_12_2, mom_breaks[[1]])
   ) %>%
   ungroup()
 
